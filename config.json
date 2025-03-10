@@ -1,0 +1,16 @@
+{
+    "dims": 3, 
+    "udim":32,
+    "in_channels": 3, 
+    "channels": [8, 16, 24], 
+    "sample_steps": 25, 
+    "sample_size": 32, 
+    "learning_rate": 0.0001, 
+    "epochs": 200, 
+    "batch_size":14, 
+    "accumulate_grad_batches": 1, 
+    "gradient_clip_val": 10, 
+    "precision": "32", 
+    "compile": false,
+    "periodic": false
+}

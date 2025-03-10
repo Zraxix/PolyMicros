@@ -1,0 +1,10 @@
+CSResults.h5
+PM3D.h5
+PM3DO.h5
+data/
+experiments/
+PCA/
+__pycache__
+scratch/
+figs/
+samples/
