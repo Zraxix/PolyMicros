@@ -24,7 +24,7 @@ UnetP.py       - ddpm style unet modified for 3D data with perodic boundary cond
 
 ### Multi-Output Gaussain Random Field Code
 
-MOSMKernel.py  - Code allowing for the generation Multioutput covariance matrices using the MOSM kerenl
+MOSMKernel.py  - Code allowing for the generation of auto- and cross- correlations using the MOSM kernel
 
 GRFSampler     - Code for sampling from the MOGRF given a covariance
 
