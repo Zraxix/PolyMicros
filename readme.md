@@ -1,0 +1,1 @@
+#PolyMicros: Bootstrapping a Foundation Model for Polycrystalline Material Structure
