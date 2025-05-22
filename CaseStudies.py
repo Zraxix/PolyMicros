@@ -19,9 +19,6 @@ from MOSMKernel import MultiouputSpectralMixtureKernel, LHSParams
 
 from GRFSampler import TwoPCorrelation
 
-results=h5py.File("CSResults.h5","a")
-nsamples = 6
-
 #################### Utility Functions
 
 def dict2namespace(config: dict):
@@ -48,6 +45,9 @@ def BM2SM(bmasks,structs):
 
 
 #################### Load Test Structures
+
+results=h5py.File("CSResults.h5","a")
+nsamples = 6
 
 
 TSFile = h5py.File("data/Test_Structures.h5","r")

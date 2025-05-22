@@ -8,7 +8,7 @@ from typing import List, Optional, Type, Union
 
 import torch
 
-from diffusers.utils.torch_utils import randn_tensor
+#from diffusers.utils.torch_utils import randn_tensor
 from lightning.pytorch import LightningModule
 from lightning.pytorch.utilities import rank_zero_only
 from torch import nn, optim
@@ -16,7 +16,12 @@ from torchmetrics import MeanMetric
 
 import traceback
 
-from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+from torch.optim.swa_utils import AveragedModel
+try:
+    from torch.optim.swa_utils import get_ema_multi_avg_fn
+    multiavgfn_bool = True
+except:
+    multiavgfn_bool = False
 
 from einops import rearrange, reduce
 
@@ -52,7 +57,17 @@ class Diffusion(LightningModule):
         super().__init__()
         self.max_epochs = epochs_max
         self.model = model
-        self.model_ema = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
+        if multiavgfn_bool:
+            self.model_ema = AveragedModel(
+                self.model, 
+                multi_avg_fn=get_ema_multi_avg_fn(ema_decay)
+            )
+        else:
+            self.model_ema = AveragedModel(
+                self.model, 
+                avg_fn = lambda averaged_model_parameter, model_parameter, num_averaged: \
+                    ema_decay * averaged_model_parameter + (1 - ema_decay) * model_parameter,
+            )
         self.image_size = model.sample_size
         self.channels = model.in_channels
         self.dims = self.model.dims
@@ -260,11 +275,11 @@ class Diffusion(LightningModule):
 
         if images == None:
             shape = tuple([1, self.channels] + [self.image_size]*self.dims) #set this to 3 if doing 2d to 3d
-            images = randn_tensor(shape, generator=generator, device=self.device) * times[:,-1]
+            images = torch.randn(shape, generator=generator, device=self.device) * times[:,-1]
 
         else:
             shape = tuple(images.shape)
-            images = images + randn_tensor(shape, generator=generator, device=self.device) * times[:,timesteps[-1]]
+            images = images + torch.randn(shape, generator=generator, device=self.device) * times[:,timesteps[-1]]
 
             if num_samples > 1:
                 print("multiple samples will not work for diffusion with an initalization, cause ram shit. idk try and change it if you want. tbh it's not that hard, im just lazy")
@@ -282,7 +297,7 @@ class Diffusion(LightningModule):
         else:
             out = []
             for i in range(num_samples):
-                images = randn_tensor(shape, generator=generator, device=self.device) * times[:,-1]
+                images = torch.randn(shape, generator=generator, device=self.device) * times[:,-1]
                 out.append(sampler(
                     generator = generator,
                     timesteps=timesteps,
@@ -365,7 +380,7 @@ class Diffusion(LightningModule):
 
         for i in reversed(timesteps[1:]):
                 
-            e = randn_tensor(shape, generator=generator, device=self.device) * s_noise
+            e = torch.randn(shape, generator=generator, device=self.device) * s_noise
             
             if times[:,i].item() > s_min and times[:,i].item() < s_max:
                 gamma = torch.tensor([s_churn/self.bins_max,(2**.5)-1]).min()

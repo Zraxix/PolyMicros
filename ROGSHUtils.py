@@ -7,7 +7,7 @@ NEEDS DOCUMENTATION
 '''
 
 class ROGSH432():
-    def __init__(self, path = "/home/azureuser/Projects/TwoPSGen/GSHTrees/"):
+    def __init__(self, path = "./GSHTrees/"):
         self.rogsh = np.load(path+"rogsh_432.npy")
         self.euler = np.load(path+"euler_432.npy")
 
@@ -17,11 +17,21 @@ class ROGSH432():
         with open(path+'KDRogsh_432.pkl', 'rb') as f:
             self.KDRogsh = pickle.load(f)
     
-    def CHullProj(self, rogsh):
+    def CHullProj(self, rogsh: np.ndarray) -> list[np.ndarray, int]:
+        '''
+        Maps continuous ROGSH values to closest discrete ROGSH value
+        and its index, i.
+
+        Supports doing this in an array.
+        '''
         _, i = self.KDRogsh.query(rogsh)
         return self.rogsh[i], i
 
-    def Rogsh2Euler(self,rogsh):
+    def Rogsh2Euler(self, rogsh):
+        '''
+        Maps continuous ROGSH values to closest discrete euler angle
+        set.
+        '''
         _, i = self.KDRogsh.query(rogsh)
         return self.euler[i] 
     

@@ -8,3 +8,4 @@ __pycache__
 scratch/
 figs/
 samples/
+model_checkpoints/
