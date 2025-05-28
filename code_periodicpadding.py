@@ -28,6 +28,7 @@ from scipy.spatial import KDTree
 
 import itertools, json, argparse
 from diffusion import Diffusion
+import h5py
 
 # -----------------------------------------------------
 # Final postprocessing projector algorithms
@@ -448,6 +449,7 @@ def main():
     micro = sample[:, :, sample.shape[2] // 2]
 
     # PARAMETERS
+    save_location = './experiments/microstructure_database_May22.h5'
 
     # Polymicros parameters
     extracted_dim = 64
@@ -477,53 +479,55 @@ def main():
         overlap_width=overlap_width,
     )
 
-    collected_slices = []
-
     # extract structures
     sample = np.load('./experiments/cutoutcube.npy')
 
-    for micro in extract_3d_volumes(sample, extracted_dim=extracted_dim):
-        # convert to ROGSH
-        micro = GSH.ROGSH(micro)
 
-        # pad using polymicros
-        padded_micro = polymicros_padder(
-            sample = micro,
-            steps = steps,
-            skip = skip,
-            numpy_form = True,
+    # creating a save location
+    total_structures = 60 * 24
+    structure_index = 0
+
+    with h5py.File(save_location, 'w') as fil:
+        dset = fil.create_dataset(
+            'euler',
+            shape = (total_structures, 82, 82, 3),
+            chunks = (1, 82, 82, 3),
+            dtype=np.float64,
+            compression='gzip',
+            compression_opts=4,
         )
 
-        # extract slices:
-        for slice_index, micro_slice in enumerate(extract_2d_slices_from_3d_volumes(
-                padded_micro, 
-                slice_frequency=slice_frequency,
-                offset = offset,
-            )):
-            # first cluster
-            micro_slice = cluster_cleaning(micro_slice.copy())
+        # performing extraction
+        for micro in extract_3d_volumes(sample, extracted_dim=extracted_dim):
+            # convert to ROGSH
+            micro = GSH.ROGSH(micro)
 
-            # then clean
-            micro_slice = median_filter_algorithm(micro_slice.copy(), width=width, tolerances=[toler for _ in range(3)])
+            # pad using polymicros
+            padded_micro = polymicros_padder(
+                sample = micro,
+                steps = steps,
+                skip = skip,
+                numpy_form = True,
+            )
 
-            # project back to Euler
-            micro_slice = gsh_projector.Rogsh2Euler(micro_slice.copy())
+            # extract slices:
+            for slice_index, micro_slice in enumerate(extract_2d_slices_from_3d_volumes(
+                    padded_micro, 
+                    slice_frequency=slice_frequency,
+                    offset = offset,
+                )):
+                # first cluster
+                micro_slice = cluster_cleaning(micro_slice.copy())
 
-            # append to collection
-            collected_slices.append(micro_slice)
+                # then clean
+                micro_slice = median_filter_algorithm(micro_slice.copy(), width=width, tolerances=[toler for _ in range(3)])
 
-            if len(collected_slices) == 18:
-                f, axes = plt.subplots(3, 6, figsize=[30, 15])
+                # project back to Euler
+                micro_slice = gsh_projector.Rogsh2Euler(micro_slice.copy())
 
-                for ax, slic in zip(axes.flatten(), collected_slices):
-                    ax.imshow(np.swapaxes(slic, 0, 1))
-                    ax.invert_yaxis()
-
-                f.tight_layout()
-                f.savefig('./figs/TG/example_extracted_structures.png', dpi=300)
-
-                exit()
-
+                # append to collection
+                dset[structure_index] = micro_slice
+                structure_index += 1
 
 
 if __name__ == "__main__":
