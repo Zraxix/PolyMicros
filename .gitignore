@@ -10,3 +10,4 @@ figs/
 samples/
 model_checkpoints/
 *.slurm
+data_tgfatiguedata.py

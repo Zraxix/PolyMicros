@@ -29,6 +29,7 @@ from scipy.spatial import KDTree
 import itertools, json, argparse
 from diffusion import Diffusion
 import h5py
+from torchvision import transforms
 
 # -----------------------------------------------------
 # Final postprocessing projector algorithms
@@ -133,7 +134,6 @@ def median_filter_algorithm(
         center_pixel = arr.reshape(width, width)[width // 2, width // 2]
         if np.isclose(center_pixel, arr, atol=tolerance).sum() < (width ** 2 * 0.34):
             return stats.mode(arr)[0]
-            #return np.median(arr)
         else:
             return center_pixel
 
@@ -151,6 +151,136 @@ def median_filter_algorithm(
 
     micro = np.concatenate([mode_filter(micro[..., n], tolerance=tolerances[n])[..., None] for n in range(len(tolerances))], axis=-1)
     return micro
+
+def logical_median_filter_algorithm(
+        micro: np.ndarray, 
+        width: int=3,
+        tolerances: list[float]=[3.0, 3.0, 3.0]
+    ):
+    '''
+    This is a custom filtering algorithm that
+    replaces a given pixel with the most common
+    pixel in its neighborhood if the pixel's value is
+    too uncommon in the neighorhood.
+
+    Meant to handle unlikely single pixel islands.
+
+    This logical extension will update any pixel if any
+    of its three channels are deemed needed to be updated.
+    The non-logical variant updates each channel independently
+    which can lead to some undesirable shifting.
+
+    :param micro: a microstructure of shape [SpaceX, SpaceY, Channels]
+    '''
+    assert micro.shape[-1] == len(tolerances)
+
+    # --------------------------------------------------------------------
+    # First Stage: Identifying Islands
+    # --------------------------------------------------------------------
+
+    def generated_filter(arr, tolerance, width):
+        center_pixel = arr.reshape(width, width)[width // 2, width // 2]
+        if np.isclose(center_pixel, arr, atol=tolerance).sum() < (width ** 2 * 0.34):
+            return np.nan
+        else:
+            return center_pixel
+
+    def mask_filter(image, width=width, tolerance=1.0):
+        footprint = np.ones((width, width), dtype=bool) # 3x3 neighborhood
+        lowlevel_filter = partial(generated_filter, tolerance=tolerance, width=width)
+        return ndimage.generic_filter(
+            image,
+            #lambda x: stats.mode(x, keepdims=True)[0][0], # Or stats.mode(x, axis=None).mode[0] for SciPy >=1.11
+            lowlevel_filter,
+            footprint=footprint,
+            mode='wrap',
+            #axes=(0, 1),
+        )
+
+    update_mask = np.concatenate([mask_filter(micro[..., n], tolerance=tolerances[n])[..., None] for n in range(len(tolerances))], axis=-1)
+    update_mask = np.isnan(update_mask).any(axis=-1)
+
+    # --------------------------------------------------------------------
+    # Second Stage -- Removing Values
+    # --------------------------------------------------------------------
+
+    def apply_masked_mode_filter(A: np.ndarray, B: np.ndarray, window_size: int) -> np.ndarray:
+        """
+        Applies a mode filter to selected elements of a 3D NumPy array (NxNx3) based on a
+        2D boolean mask (NxN), using periodic boundary conditions.
+
+        Args:
+            A (np.ndarray): The input 3D NumPy array of shape (N, N, 3) representing an image.
+                            The filter will modify this array in-place.
+            B (np.ndarray): The 2D boolean NumPy array of shape (N, N), serving as a mask.
+                            Where B[i, j] is True, the mode filter will be applied to A[i, j].
+            window_size (int): The size of the square window (e.g., 3 for a 3x3 window).
+                            Must be an odd positive integer.
+
+        Returns:
+            np.ndarray: The modified array A with the mode filter applied to masked elements.
+        """
+
+        # --- Input Validation ---
+        if not isinstance(A, np.ndarray) or A.ndim != 3 or A.shape[2] != 3:
+            print("Error: Input array 'A' must be a 3D NumPy array of shape (N, N, 3).")
+            return A
+        if not isinstance(B, np.ndarray) or B.ndim != 2 or B.dtype != bool:
+            print("Error: Input array 'B' must be a 2D boolean NumPy array of shape (N, N).")
+            return A
+        if A.shape[0] != B.shape[0] or A.shape[1] != B.shape[1]:
+            print("Error: Dimensions of A (first two) and B must match (N, N).")
+            return A
+        if not isinstance(window_size, int) or window_size <= 0 or window_size % 2 == 0:
+            print("Error: window_size must be a positive odd integer.")
+            return A
+
+        N = A.shape[0]
+        half_window = window_size // 2
+
+        # Create a copy to store results and avoid modifying A while still reading from it
+        # in subsequent iterations of the loop for calculating mode.
+        # Although the user requested in-place modification, for filter operations,
+        # it's often safer to compute on a copy and then update the original.
+        # However, the user explicitly asked to "go to the corresponding element in A and apply a mode_filter".
+        # This implies the mode filter for A[i,j] depends on the *original* values around A[i,j]
+        # rather than newly filtered values. So, we'll iterate and modify A directly.
+        # If the intent was for all pixels to be filtered based on the *original* A,
+        # a copy would be needed for `window_slice` extraction.
+        # For a direct in-place update as requested, we proceed as follows.
+
+        # Iterate only over the elements where B is True
+        rows_to_process, cols_to_process = np.where(B)
+
+        for r, c in zip(rows_to_process, cols_to_process):
+            # Determine the row and column indices for the current window,
+            # applying periodic boundary conditions.
+            row_indices = [(r + dr) % N for dr in range(-half_window, half_window + 1)]
+            col_indices = [(c + dc) % N for dc in range(-half_window, half_window + 1)]
+
+            # Extract the window from the array A.
+            # np.ix_ is used to correctly select 2D slices from a 3D array.
+            window_slice = A[np.ix_(row_indices, col_indices)]
+
+            # Calculate the mode for each of the 3 channels
+            # .flatten() is used to convert the window_size x window_size array for each channel
+            # into a 1D array, as required by scipy.stats.mode.
+            mode_channel_0 = stats.mode(window_slice[:, :, 0].flatten(), keepdims=False)[0]
+            mode_channel_1 = stats.mode(window_slice[:, :, 1].flatten(), keepdims=False)[0]
+            mode_channel_2 = stats.mode(window_slice[:, :, 2].flatten(), keepdims=False)[0]
+
+            # Assign the calculated modes back to the current element A[r, c]
+            A[r, c, 0] = mode_channel_0
+            A[r, c, 1] = mode_channel_1
+            A[r, c, 2] = mode_channel_2
+
+        return A
+
+
+    micro = apply_masked_mode_filter(micro.copy(), update_mask, window_size=width)
+
+    return micro
+
 
 # -----------------------------------------------------
 # PolyMicros Projecting
@@ -444,6 +574,151 @@ def extract_2d_slices_from_3d_volumes(micro, slice_frequency, offset: typing.Opt
     for z_slice in range(num_slices[2]):
         yield micro[:, :, offset + z_slice * slice_frequency, :].copy()
 
+# -----------------------------------------------------
+# Periodic padding
+# -----------------------------------------------------
+
+def resize_with_periodic_padding(image, output_size, interpolation_mode=transforms.InterpolationMode.NEAREST):
+    """
+    Resizes an image with periodic boundary conditions.
+
+    Args:
+        image (PIL.Image or torch.Tensor): The input image.
+        output_size (tuple or int): Desired output size (height, width).
+        interpolation_mode (torchvision.transforms.InterpolationMode): Interpolation mode.
+    """
+    if isinstance(image, torch.Tensor):
+        image_tensor = image
+    else:
+        raise ValueError("Input image must be a torch.Tensor")
+
+    original_height, original_width = image_tensor.shape[-2:]
+
+    # Determine padding amount (adjust based on interpolation kernel)
+    # For bilinear, 1 pixel is often enough for simple cases. For bicubic, often 2.
+    # It's safer to over-pad slightly if unsure.
+    padding_h = 6
+    padding_w = 6
+
+    # Pad the image periodically using numpy for simplicity
+    # Convert to numpy, pad, then convert back to tensor
+    np_image = image_tensor.permute(1, 2, 0).numpy() if image_tensor.dim() == 3 else image_tensor.numpy()
+    
+    # Pad in each dimension (height, width)
+    padded_np_image = np.pad(np_image, 
+                             ((padding_h, padding_h), (padding_w, padding_w), (0, 0)) if image_tensor.dim() == 3 else ((padding_h, padding_h), (padding_w, padding_w)), 
+                             mode='wrap')
+    
+    padded_image_tensor = torch.from_numpy(padded_np_image).permute(2, 0, 1).unsqueeze(0) if image_tensor.dim() == 3 else torch.from_numpy(padded_np_image)
+
+    # Calculate the scaling factor for the padded image
+    scale_h = output_size[0] / original_height
+    scale_w = output_size[1] / original_width
+
+    # Calculate the target size for the padded image after resizing
+    target_padded_height = int(round(padded_image_tensor.shape[-2] * scale_h))
+    target_padded_width = int(round(padded_image_tensor.shape[-1] * scale_w))
+    
+    resize_transform = transforms.Resize((target_padded_height, target_padded_width), 
+                                         interpolation=interpolation_mode)
+    
+    resized_padded_image = resize_transform(padded_image_tensor)
+
+    # Calculate crop coordinates
+    start_h = int(round(padding_h * scale_h))
+    start_w = int(round(padding_w * scale_w))
+    end_h = start_h + output_size[0]
+    end_w = start_w + output_size[1]
+    
+    final_image = resized_padded_image[..., start_h:end_h, start_w:end_w]
+
+    return final_image
+
+# -----------------------------------------------------
+# Main running code
+# -----------------------------------------------------
+
+def main_second_filter_and_delete():
+    ''' secondary filter and delete process '''
+    # Parameters
+    toler = 0.010
+    width = 3
+
+    remove_indexes = [
+        2, 50, 194, 223, 242, 289, 290, 291, 340, 
+        341, 352, 353, 386, 385, 458, 448, 473, 602, 
+        673, 761, 977, 1015, 1001, 1032, 1048, 1152, 
+        1184, 1257, 1265, 1256, 1328, 1336, 1327, 1320
+    ]
+    resolutions = [32, 64, 128]
+    rez_samplers = [transforms.Resize(rez, interpolation=transforms.InterpolationMode.NEAREST) for rez in resolutions]
+
+    load_from_file = './experiments/microstructure_database_May22.h5'
+    save_to_file = './experiments/microstructure_database_June5.h5'
+
+    with h5py.File(load_from_file, 'r') as fil:
+        total_structures = len(fil['euler']) - len(remove_indexes)
+
+        # Create the save file
+        with h5py.File(save_to_file, 'w') as fil_write:
+            dset = fil_write.create_dataset(
+                'euler',
+                shape = (total_structures, 82, 82, 3),
+                chunks = (1, 82, 82, 3),
+                dtype=np.float64,
+                compression='gzip',
+                compression_opts=4,
+            )
+
+            rez_datasets = []
+            for rez in resolutions:
+                rez_datasets.append(
+                    (
+                        fil_write.create_dataset(
+                            f'euler_{rez}',
+                            shape = (total_structures, rez, rez, 3),
+                            chunks = (1, rez, rez, 3),
+                            dtype=np.float64,
+                            compression='gzip',
+                            compression_opts=4,
+                        ), 
+                        rez
+                    )
+                )
+            
+            # curate remaining structures
+            new_micro_index = 0
+            for micro_index, micro in enumerate(fil['euler']):
+                if micro_index not in remove_indexes:
+                    # filter
+                    micro = logical_median_filter_algorithm(
+                        micro.copy(), width=width, tolerances=[toler for _ in range(3)]
+                    )
+
+                    # store
+                    dset[new_micro_index, ...] = micro
+
+                    # resample
+                    for (rez_dset, rez), rez_resampler in zip(rez_datasets, rez_samplers):
+                        # down sample
+                        #down_micro = torch.movedim(rez_resampler(torch.movedim(torch.from_numpy(micro), -1, 0)), 0, -1).numpy()
+                        down_micro = resize_with_periodic_padding(
+                             image = torch.movedim(torch.from_numpy(micro), -1, 0),
+                             output_size=[rez, rez],
+                             interpolation_mode=transforms.InterpolationMode.NEAREST,
+                        )
+                        down_micro = torch.movedim(down_micro[0], 0, -1).numpy()
+
+                        # save
+                        rez_dset[new_micro_index, ...] = down_micro
+
+                    # increment
+                    new_micro_index += 1
+                    
+                else:
+                    print(f'Removed: {micro_index}')
+
+
 def main():
     sample = np.load('./figs/TG/periodic_microstructure_example.npy')
     micro = sample[:, :, sample.shape[2] // 2]
@@ -531,5 +806,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    #main()
+    main_second_filter_and_delete()
 
