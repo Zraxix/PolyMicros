@@ -11,3 +11,5 @@ samples/
 model_checkpoints/
 *.slurm
 data_tgfatiguedata.py
+.gitignore
+code_johns3dmicro.py

@@ -80,9 +80,10 @@ def cluster_cleaning(
     This uses HDBSCAN clustering to turn noisy grains into 
     individual grains.
 
-    :param micro: a microstructure of shape [SpaceX, SpaceY, Channels]
+    :param micro: a microstructure of shape [SpaceX, SpaceY, Channels] or
+                    [SpaceX, SpaceY, SpaceZ, Channels]
     '''
-    X, Y, C = micro.shape
+    micro_shape = micro.shape
 
     clusterer = HDBSCAN(
         cluster_selection_epsilon=cluster_selection_epsilon,
@@ -109,7 +110,118 @@ def cluster_cleaning(
             micro[n, :] = centers[min_index, :]
     
     # reshaping
-    micro = micro.reshape(X, Y, C)
+    micro = micro.reshape(*micro_shape)
+    return micro
+
+def cluster_cleaning_for_3D(
+        arr, 
+        subsample: int=1000, 
+        cluster_selection_epsilon: float=0.020,
+        min_cluster_size: int=8,
+        return_microstructure: bool=True,
+    ) -> np.ndarray:
+    '''
+    This method takes in a 3D microstructure ([SpaceX, SpaceY, SpaceZ, C])
+    and segments the individual grains via clustering. It returns a 3D 
+    microstructure with the same shape but where each grain is assigned its original
+    mean value. Note, because the segmentation is performed via a nonlocal clustering
+    algorithm, it is possible for multiple disconnected grains to be assigned the
+    same grain ID and the same mean. 
+
+    :param arr: the microstructure (a numpy array) [SpaceX, SpaceY, SpaceZ, C]
+    :param subsample: the number of pixels to perform clustering on (1000-5000)
+                      is usually enough.
+    :param cluster_selection_epsilon: a HDBSCAN hyperparameter
+    :param min_cluster_size: another HDBSCAN hyperparameter. Note, this parameter and
+                             the subsample parameter are obviously coupled. For a grain
+                             to be identified, it must be randomly sampled at least 
+                             min_cluster_size number of times. 
+    :param return_microstructure: whether to return the microstructure or the grain IDs.
+    '''
+    # reshape into list
+    shape = arr.shape
+    arr = arr.reshape(-1, shape[-1])
+
+    # do the segmentation
+    choice = np.random.choice(len(arr), min(len(arr), subsample), replace=False)
+    downsampled_arr = arr[choice, ...]
+
+    clusterer = HDBSCAN(
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        min_cluster_size=min_cluster_size,
+    )
+    labels = clusterer.fit_predict(downsampled_arr)
+
+    def identify_centers(array, indexes):
+        ''' identify the center of each index cluster '''
+        n_centers = len(np.unique(indexes))
+        sums = np.zeros((n_centers, *array.shape[1:]), dtype=array.dtype)
+        np.add.at(sums, indexes, array)
+
+        # number of counts
+        counts = np.zeros(n_centers, dtype=np.int64)
+        np.add.at(counts, indexes, 1)
+
+        # compute mean while avoiding dividing by zero - tbh i don't think this is necessary
+        nonzero = counts != 0
+        means = np.empty_like(sums)
+        means[nonzero] = sums[nonzero] / counts[nonzero][:, *[None, ] * len(arr.shape[1:])]
+        means[~nonzero] = 0.0
+
+        return means
+    
+    # identify cluster centers
+    centers = identify_centers(downsampled_arr, labels)
+
+    # label all of arr.
+    kdtree = KDTree(centers)
+    _, indexes = kdtree.query(arr)
+
+    if not return_microstructure:
+        indexes = indexes.reshape(shape[:-1])
+        return indexes
+
+    else:
+        means = identify_centers(arr, indexes)
+        return means[indexes].reshape(shape)
+
+def median_filter_algorithm_3D(
+        micro: np.ndarray, 
+        width: int=3,
+        tolerances: list[float]=[3.0, 3.0, 3.0]
+    ):
+    '''
+    This is a custom filtering algorithm that
+    replaces a given pixel with the most common
+    pixel in its neighborhood if the pixel's value is
+    too uncommon in the neighorhood.
+
+    Meant to handle unlikely single pixel islands.
+
+    :param micro: a microstructure of shape [SpaceX, SpaceY, SpaceZ, Channels]
+    '''
+    assert micro.shape[-1] == len(tolerances)
+
+    def generated_filter(arr, tolerance, width):
+        center_pixel = arr.reshape(width, width, width)[width // 2, width // 2, width // 2]
+        if np.isclose(center_pixel, arr, atol=tolerance).sum() < (width ** 2 * 0.34):
+            return stats.mode(arr)[0]
+        else:
+            return center_pixel
+
+    def mode_filter(image, width=width, tolerance=1.0):
+        footprint = np.ones((width, width, width), dtype=bool) # 3x3 neighborhood
+        lowlevel_filter = partial(generated_filter, tolerance=tolerance, width=width)
+        return ndimage.generic_filter(
+            image,
+            #lambda x: stats.mode(x, keepdims=True)[0][0], # Or stats.mode(x, axis=None).mode[0] for SciPy >=1.11
+            lowlevel_filter,
+            footprint=footprint,
+            mode='wrap',
+            #axes=(0, 1),
+        )
+
+    micro = np.concatenate([mode_filter(micro[..., n], tolerance=tolerances[n])[..., None] for n in range(len(tolerances))], axis=-1)
     return micro
 
 
